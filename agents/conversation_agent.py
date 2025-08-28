@@ -30,7 +30,7 @@ class ConversationAgent:
 
     def __init__(self) -> None:
         # Flags/timeout
-        self.dry_run = os.getenv("AI_DRY_RUN", "0") == "1"
+        self.dry_run = False  # Forçar AI real
         self.timeout = float(os.getenv("OPENAI_TIMEOUT", "25"))  # segundos
         logger.warning(f"ConversationAgent init: DRY_RUN={self.dry_run}, timeout={self.timeout}s")
 
@@ -46,6 +46,7 @@ class ConversationAgent:
             if not api_key:
                 raise RuntimeError("OPENAI_API_KEY não configurada.")
             self.client = OpenAI(api_key=api_key)
+            logger.info("OpenAI habilitada para conversação real")
 
     # ------------- Público -------------
     def process_lead(self, lead_data: Dict[str, Any]) -> Dict[str, Any]:
