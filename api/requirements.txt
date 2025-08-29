@@ -1,19 +1,18 @@
+# Dependências mínimas - WhatsApp AI Agent v2.0
+
+# FastAPI
 fastapi==0.115.5
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
 
-# AI básico
+# OpenAI
 openai==1.43.0
-langchain-community==0.2.16
-
-# PDF processing  
-pypdf2==3.0.1
 
 # HTTP
 httpx==0.27.2
 
-# Logs simples
+# Logs
 loguru==0.7.2
 
-# Teste básico
+# Testes
 pytest==8.3.3
