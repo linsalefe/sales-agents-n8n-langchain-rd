@@ -1,6 +1,6 @@
-# Dependências mínimas - WhatsApp AI Agent v2.0
+# WhatsApp AI Agent v2.0 - Dependências Mínimas
 
-# FastAPI
+# FastAPI Core
 fastapi==0.115.5
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
@@ -8,7 +8,7 @@ pydantic==2.9.2
 # OpenAI
 openai==1.43.0
 
-# HTTP
+# HTTP Client
 httpx==0.27.2
 
 # Logs

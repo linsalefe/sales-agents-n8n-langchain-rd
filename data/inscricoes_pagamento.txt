@@ -1,0 +1,16 @@
+# PRODUTO: inscricoes_pagamento (cross-product)
+
+Q: Como realizo a inscrição?
+A: Pelo site oficial do curso/evento; eventos via Doity. Confirmação após compensação (boleto pode levar até 3 dias úteis).
+
+Q: Quais são as formas de pagamento?
+A: Cartão (até 12x, com juros), boleto (geralmente à vista; alguns cursos até 3x), e PIX (quando disponível).
+
+Q: Existem descontos?
+A: Estudantes com carteirinha; por lote; grupos (10–20: 10%; >20: 15%, via e-mail); combos (ex.: evento + curso/comunidade).
+
+Q: Como aplicar cupom?
+A: Solicite via atendimento humano; quando aplicável, usamos cupons ativos no evento/Doity (ex.: ALUNOSPOS).
+
+Q: Cancelamento e reembolso
+A: Reembolso integral em até 7 dias após a compra. Solicitar pelo titular via {{EMAIL_ATENDIMENTO}}.

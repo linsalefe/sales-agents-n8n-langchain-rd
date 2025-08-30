@@ -1,0 +1,25 @@
+# PRODUTO: eventos (congressos, seminários, pré-congressos)
+
+Q: Onde vejo os próximos eventos?
+A: A lista completa está em {{EVENTOS_LISTA}}.
+
+Q: Como me inscrevo em um congresso específico?
+A: Enviamos o link direto da página/Doity do congresso informado. Diga o nome (ex.: cidade) que eu localizo e te envio.
+
+Q: Há desconto em hotel?
+A: Não há parceria oficial. Podemos indicar opções de hospedagem.
+
+Q: Qual é a programação diária do evento?
+A: Cada evento tem sua programação específica. Informe o evento e envio o link oficial da programação.
+
+Q: Haverá tradução simultânea?
+A: Caso precise de intérprete, avise aqui ou envie para {{EMAIL_EVENTOS}}.
+
+Q: Como submeter trabalho?
+A: Informe o evento e envio o link de submissão correspondente.
+
+Q: Como acessar palestras on-line / gravações?
+A: Para seminários, links e gravações são exclusivos para inscritos. Quando for aula ao vivo no YouTube, envio o link da transmissão.
+
+Q: Não recebi o link do evento ao vivo.
+A: Confirme seu nome completo + nome do evento. Verifico a inscrição e reenvio o link; cheque também spam/lixo eletrônico do e-mail.

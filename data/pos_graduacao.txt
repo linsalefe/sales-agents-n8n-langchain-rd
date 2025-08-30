@@ -1,0 +1,16 @@
+# PRODUTO: pós_graduacao
+
+Q: Quais turmas de pós estão disponíveis?
+A: Consulte as próximas turmas em {{POS_TURMAS}}.
+
+Q: A pós é reconhecida pelo MEC?
+A: Sim. Parceria com IES credenciadas (ex.: Faculdade São Marcos e Censupeg). Certificado com validade legal.
+
+Q: Precisa ter graduação concluída?
+A: Sim. O MEC exige diploma de graduação para iniciar uma especialização lato sensu.
+
+Q: Tem TCC?
+A: Não. As avaliações são por atividades e, ao final, um Projeto Terapêutico Singular (conforme CNE/CES nº 1/2018).
+
+Q: Como funciona a seleção?
+A: Preenchimento de formulário on-line e breve entrevista telefônica para checar alinhamento/perfil. Dúvidas: {{EMAIL_ATENDIMENTO}}.

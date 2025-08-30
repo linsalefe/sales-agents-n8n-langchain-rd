@@ -1,0 +1,14 @@
+# CENAT - Institucional (RAG TXT)
+# Produto: institucional (escopo geral).
+
+Q: Quem é o CENAT?
+A: O CENAT – Centro de Estudos em Saúde Mental e Atenção Psicossocial – é uma organização educacional para formação em saúde mental, psicologia, assistência social e políticas públicas. Foco em práticas humanizadas, direitos humanos, SUS, Reforma Psiquiátrica e cuidado em liberdade.
+
+Q: Missão, visão e valores do CENAT?
+A: Missão: formar profissionais éticos, críticos e comprometidos com direitos sociais. Valores: defesa da vida, equidade, SUS, atenção psicossocial, diversidade e cuidado em liberdade (alinhado à Reforma Psiquiátrica Brasileira).
+
+Q: Quem são os docentes?
+A: Docentes e convidados nacionais e internacionais, com atuação no SUS, clínica, universidades, justiça social e educação popular.
+
+Q: Metodologia de ensino?
+A: Metodologias ativas, encontros on-line (ao vivo), foco na realidade dos serviços, troca de experiências, análise de casos e supervisão, integrando teoria, prática e ética.

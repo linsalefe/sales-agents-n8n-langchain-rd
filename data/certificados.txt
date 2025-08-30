@@ -1,0 +1,13 @@
+# PRODUTO: certificados (suporte)
+
+Q: Não recebi meu certificado. Como proceder?
+A: Envie nome completo e o nome do evento/curso. Verificamos e reencaminhamos o link (Doity, quando aplicável).
+
+Q: Meu nome saiu errado no certificado.
+A: Informe o nome correto e o evento; encaminhamos ajuste via atendimento.
+
+Q: Quero reemitir um certificado antigo.
+A: Informe o evento e nome completo; verificamos disponibilidade no sistema.
+
+Q: Os eventos têm certificado?
+A: Sim. Todos os eventos do CENAT emitem certificado com validação.

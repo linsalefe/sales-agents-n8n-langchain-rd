@@ -1,0 +1,16 @@
+# PRODUTO: comunidade (assinatura "Novas Abordagens em Saúde Mental")
+
+Q: O que está incluso na Comunidade?
+A: +30 cursos gravados (~250h), encontros mensais ao vivo (Zoom), plantões de dúvidas, supervisão de casos, materiais exclusivos (vídeos, podcasts, artigos) e área de interação de assinantes.
+
+Q: Qual o valor e formas de pagamento?
+A: Assinatura anual por R$ 387,00 (ou promoções, ex.: R$ 340,00 por tempo limitado). Parcelamento até 12x (~R$ 40,97) no cartão.
+
+Q: Como acesso após a inscrição?
+A: Assim que a compra é confirmada, você recebe por e-mail os dados de login e já pode começar a estudar.
+
+Q: Esqueci minha senha.
+A: Use “esqueci minha senha” na área de login; se não resolver, fale com a gente no {{EMAIL_ATENDIMENTO}} ou WhatsApp {{WHATSAPP}}.
+
+Q: Tem certificado?
+A: Sim. Todos os cursos da Comunidade emitem certificados (20–80h) com código de verificação, válidos para horas complementares e processos seletivos.
