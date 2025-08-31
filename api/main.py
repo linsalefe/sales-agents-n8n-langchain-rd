@@ -1,9 +1,10 @@
-# api/main.py - WhatsApp AI Agent v2.1
+# api/main.py - WhatsApp AI Agent v2.1 OTIMIZADO
 # - Mega API /text
 # - Webhook tolerante
 # - Anti-loop/eco + dedupe + lock
 # - RAG auto-reload (watcher de arquivos em data/)
 # - Modelo padrão: gpt-4o (configurável via .env)
+# - OTIMIZAÇÕES: Prompt inteligente, detecção de intenção, RAG priorizado
 
 import os
 import asyncio
@@ -79,26 +80,68 @@ DEDUP: Dict[str, float] = {}
 LOCKS: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 # ======================
-# RAG simples (TXT em data/)
+# RAG otimizado com priorização
 # ======================
 def load_context() -> str:
     context = []
     data_dir = RAG_DIR
     if not os.path.exists(data_dir):
         return "Sem contexto disponível."
+    
+    # Arquivos prioritários que devem aparecer primeiro
+    priority_keywords = [
+        'resumo_executivo', '00_resumo', 'faq', 'principais',
+        'pos_graduacao', 'congresso', 'eventos', 'inscricoes_pagamento',
+        'cenat_institucional', 'comunidade'
+    ]
+    
+    priority_files = []
+    regular_files = []
+    
     for root, _, files in os.walk(data_dir):
-        for file in files:
+        for file in sorted(files):
             if file.endswith(".txt"):
                 fp = os.path.join(root, file)
                 try:
                     with open(fp, "r", encoding="utf-8") as f:
-                        content = f.read().strip()
-                        if content:
+                        content_text = f.read().strip()
+                        if content_text:
                             rel = os.path.relpath(fp, data_dir)
-                            context.append(f"=== {rel} ===\n{content}")
+                            formatted_content = f"=== {rel} ===\n{content_text}"
+                            
+                            # Verificar se é arquivo prioritário
+                            is_priority = any(keyword in file.lower() for keyword in priority_keywords)
+                            if is_priority:
+                                priority_files.append(formatted_content)
+                            else:
+                                regular_files.append(formatted_content)
+                                
                 except Exception as e:
                     logger.warning(f"Erro ao ler {fp}: {e}")
-    return "\n\n".join(context) if context else "Nenhum documento encontrado."
+    
+    # Montar contexto priorizando arquivos importantes
+    all_content = priority_files + regular_files
+    full_context = "\n\n".join(all_content) if all_content else "Nenhum documento encontrado."
+    
+    # Limitar tamanho total para não estourar contexto
+    if len(full_context) > 12000:  # ~8k tokens
+        # Manter sempre os prioritários + o que couber dos regulares
+        priority_context = "\n\n".join(priority_files)
+        if len(priority_context) > 12000:
+            return priority_context[:12000] + "\n\n[CONTEXTO TRUNCADO - MANTIDOS ARQUIVOS PRIORITÁRIOS]"
+        
+        remaining_space = 12000 - len(priority_context) - 100
+        regular_context = ""
+        for content in regular_files:
+            if len(regular_context + "\n\n" + content) < remaining_space:
+                regular_context += "\n\n" + content if regular_context else content
+            else:
+                break
+        
+        final_context = priority_context + ("\n\n" + regular_context if regular_context else "")
+        return final_context
+    
+    return full_context
 
 def data_signature() -> str:
     """Assinatura do estado do diretório RAG (para detectar mudanças)."""
@@ -121,6 +164,66 @@ def data_signature() -> str:
 
 RAG_CONTEXT = load_context()
 _RAG_SIG = data_signature()
+
+# ======================
+# Detecção de intenção otimizada
+# ======================
+def detect_user_intent(message: str) -> str:
+    """Detecta a intenção do usuário para personalizar resposta."""
+    message_lower = message.lower().strip()
+    
+    # Saudações e início de conversa
+    if any(word in message_lower for word in ['oi', 'olá', 'bom dia', 'boa tarde', 'boa noite', 'eae', 'e ai']):
+        return 'greeting'
+    
+    # Intenções de alta conversão (leads quentes)
+    if any(word in message_lower for word in ['preço', 'valor', 'quanto custa', 'investimento', 'pagar', 'custo']):
+        return 'pricing'
+    
+    if any(word in message_lower for word in ['inscrição', 'inscrever', 'matricula', 'vaga', 'me inscrever', 'quero me inscrever']):
+        return 'enrollment'
+    
+    if any(word in message_lower for word in ['link', 'site', 'página', 'url', 'endereço']):
+        return 'link_request'
+    
+    # Produtos/serviços específicos
+    if any(word in message_lower for word in ['congresso', 'evento', 'palestras', 'seminário']):
+        return 'events'
+    
+    if any(word in message_lower for word in ['pós', 'pos-graduacao', 'especialização', 'mestrado', 'pós-graduação']):
+        return 'postgrad'
+    
+    if any(word in message_lower for word in ['curso', 'cursos', 'formação', 'capacitação', 'comunidade', 'online']):
+        return 'courses'
+    
+    # Informações específicas
+    if any(word in message_lower for word in ['quando', 'data', 'cronograma', 'calendario', 'prazo']):
+        return 'schedule'
+    
+    if any(word in message_lower for word in ['onde', 'local', 'endereço', 'cidade', 'lugar']):
+        return 'location'
+    
+    if any(word in message_lower for word in ['como', 'processo', 'funciona', 'etapas', 'procedimento']):
+        return 'process'
+    
+    # Certificação e reconhecimento
+    if any(word in message_lower for word in ['certificado', 'certificação', 'mec', 'reconhecido', 'válido']):
+        return 'certification'
+    
+    # Interesse geral
+    if any(word in message_lower for word in ['informação', 'informações', 'gostaria de saber', 'quero saber', 'me fala']):
+        return 'info_request'
+    
+    # Respostas de confirmação/interesse
+    if any(word in message_lower for word in ['sim', 'ok', 'certo', 'beleza', 'pode', 'quero', 'tenho interesse']):
+        return 'positive_response'
+    
+    # Cidades específicas (interesse em congressos)
+    cities = ['maceió', 'belém', 'florianópolis', 'floripa', 'vitória', 'online']
+    if any(city in message_lower for city in cities):
+        return 'city_specific'
+    
+    return 'general'
 
 # ======================
 # Utilidades
@@ -152,10 +255,10 @@ def _extract_text(msg: Dict[str, Any]) -> str:
     ).strip()
 
 # ======================
-# IA Agent
+# IA Agent OTIMIZADO
 # ======================
 async def generate_response(user_message: str, user_name: str = "") -> str:
-    """Gera resposta com IA + contexto RAG."""
+    """Gera resposta inteligente com IA + contexto RAG + detecção de intenção."""
     if AI_DRY_RUN:
         return f"[TESTE] Olá {user_name or 'Cliente'}! Vi sua mensagem '{user_message[:30]}...'. Como posso ajudar?"
 
@@ -163,34 +266,129 @@ async def generate_response(user_message: str, user_name: str = "") -> str:
         return "Desculpe, estou com problemas técnicos. Tente mais tarde."
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY, timeout=20)
+        client = OpenAI(api_key=OPENAI_API_KEY, timeout=25)
+        
+        # Detectar intenção para personalizar resposta
+        intent = detect_user_intent(user_message)
+        logger.info(f"🎯 Intenção detectada: {intent} para '{user_message[:50]}...'")
 
-        system_prompt = f"""Você é um assistente de atendimento via WhatsApp.
+        system_prompt = f"""Você é LINA, assistente especializada do CENAT (Centro de Estudos em Saúde Mental).
 
-CONTEXTO DOS NOSSOS PRODUTOS/SERVIÇOS:
+🎯 MISSÃO: Ser consultiva, identificar necessidades e conectar com soluções CENAT de forma inteligente.
+
+📋 CONTEXTO CENAT (fonte única da verdade):
 {RAG_CONTEXT}
 
-REGRAS:
-- Seja cordial, prestativo e direto
-- Responda com no máximo 3 linhas
-- Use o contexto acima para responder sobre nossos produtos/serviços
-- Se não souber algo, seja honesto e ofereça ajuda humana
-- Mantenha tom profissional mas amigável
-- Nome do cliente: {user_name or 'Cliente'}"""
+🔍 INTENÇÃO DETECTADA: {intent}
 
+🗣️ ESTILO DE COMUNICAÇÃO:
+- Tom: consultivo, acolhedor, especialista em saúde mental
+- Tamanho: 3-4 linhas (máx ~400 caracteres)
+- Use o nome: {user_name or 'Cliente'}
+- Máximo 1 emoji quando relevante
+- SEMPRE termine com pergunta direta ou CTA claro
+
+🧠 FLUXO INTELIGENTE por INTENÇÃO:
+
+**GREETING/GERAL** → Apresente 3 opções principais:
+"Oi {user_name}! Sou a Lina do CENAT 😊
+Posso ajudar com:
+1. Pós-graduação Saúde Mental
+2. Congressos 2025
+3. Cursos online
+Qual te interessa mais?"
+
+**EVENTS/CONGRESSOS** → Liste próximos com datas:
+"Temos congressos confirmados:
+• Maceió: 05-06/set
+• Belém: 09-10/set  
+• Floripa: 21-22/out
+• Vitória: 24-25/out
+Qual cidade te interessa? Envio o link! 🎯"
+
+**POSTGRAD/PÓS** → Qualifique primeiro:
+"Nossa pós em Saúde Mental é reconhecida pelo MEC! 
+Você já concluiu sua graduação? 
+Em qual área atua/pretende atuar?
+Posso explicar o processo seletivo por telefone!"
+
+**PRICING/PREÇOS** → Dê valores + desconto:
+"Pós: ~R$ 300/mês | Congressos: varia por lote
+Temos desconto para estudantes e grupos!
+Quer saber sobre parcelamento e condições?"
+
+**ENROLLMENT/INSCRIÇÃO** → Direcione ação:
+"Para pós: processo seletivo (formulário + entrevista)
+Para congressos: link direto da cidade
+Qual você quer se inscrever? Te passo o caminho!"
+
+**CITY_SPECIFIC** → Link direto:
+[Se mencionar cidade específica, ofereça link do congresso daquela cidade]
+
+**LINK_REQUEST** → Confirme e envie:
+"Qual link precisa? 
+• Site geral: cenatsaudemental.com
+• Congresso específico?
+• Processo seletivo pós?
+Me fala qual!"
+
+**INFO_REQUEST/GERAL** → Ofereça opções específicas:
+"Posso detalhar:
+1. Processo seletivo pós (graduação obrigatória)
+2. Programação dos congressos
+3. Valores e descontos
+Sobre o que quer saber primeiro?"
+
+**POSITIVE_RESPONSE** → Avance no funil:
+[Continue a conversa anterior com próximo passo específico]
+
+🚨 LEADS QUENTES - PRIORIZE:
+- Pergunta preços = Dar valores + CTA parcelamento
+- Menciona graduação = Qualificar para pós
+- Cita cidade = Link congresso específico
+- Quer inscrição = Processo específico
+
+⛔ REGRAS CRÍTICAS:
+- NUNCA inventar datas, preços ou informações
+- SE não souber: "Não tenho essa info específica. Posso conectar você com nossa consultora?"
+- SEMPRE oferecer alternativa relacionada do contexto
+- Não deixar conversa "morrer" - sempre próximo passo
+- Máximo 1 emoji por resposta
+
+EXEMPLO DE RESPOSTA OTIMIZADA:
+"Oi João! Temos 3 congressos até outubro:
+• Maceió: 05-06/set
+• Belém: 09-10/set  
+• Floripa: 21-22/out
+
+Qual região te interessa? Posso enviar o link direto! 🎯"
+
+Nome do cliente: {user_name or 'Cliente'}"""
+
+        # Parâmetros otimizados da OpenAI
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
-            max_tokens=150,
-            temperature=0.7,
+            max_tokens=280,  # Aumentado para respostas mais completas
+            temperature=0.3,  # Reduzido para mais consistência
+            presence_penalty=0.1,  # Evita repetições
+            frequency_penalty=0.2,  # Incentiva variedade
+            top_p=0.9  # Mais focado nas respostas relevantes
         )
-        return resp.choices[0].message.content or "Desculpe, não consegui processar sua mensagem."
+        
+        response = resp.choices[0].message.content or "Desculpe, não consegui processar sua mensagem."
+        
+        # Log da resposta gerada
+        logger.info(f"💬 Resposta gerada para {user_name} (intenção: {intent}): {response[:100]}...")
+        
+        return response
+        
     except Exception as e:
         logger.error(f"Erro OpenAI: {e}")
-        return "Estou com dificuldades técnicas. Um humano entrará em contato em breve."
+        return f"Olá {user_name or 'Cliente'}! Estou com dificuldades técnicas agora. Pode tentar novamente em alguns minutos? Ou me chama no (47) 99242-8886 que nossa equipe te atende! 🙏"
 
 # ======================
 # MEGA API - envio de mensagem (registra LAST_SENT)
@@ -232,10 +430,16 @@ async def send_whatsapp(phone: str, message: str) -> bool:
 async def health():
     return {
         "status": "ok",
-        "version": "2.1",
+        "version": "2.1-OTIMIZADO",
         "ai_mode": "DRY_RUN" if AI_DRY_RUN else "REAL",
         "context_loaded": len(RAG_CONTEXT) > 10,
         "mega_configured": bool(MEGA_API_TOKEN and MEGA_INSTANCE_ID),
+        "optimizations": {
+            "intelligent_prompt": True,
+            "intent_detection": True,
+            "prioritized_rag": True,
+            "improved_parameters": True
+        },
         "debug": {
             "ai_dry_run_env": os.getenv("AI_DRY_RUN"),
             "mega_token_present": bool(MEGA_API_TOKEN),
@@ -245,6 +449,7 @@ async def health():
             "rag_auto_reload": RAG_AUTO_RELOAD,
             "rag_watch_interval": RAG_WATCH_INTERVAL,
             "rag_dir": RAG_DIR,
+            "context_length": len(RAG_CONTEXT),
         },
     }
 
@@ -340,13 +545,28 @@ async def reload_context():
     RAG_CONTEXT = load_context()
     _RAG_SIG = data_signature()
     logger.info(f"🔄 RAG recarregado: {len(RAG_CONTEXT)} caracteres")
-    return {"status": "ok", "context_len": len(RAG_CONTEXT)}
+    return {"status": "ok", "context_len": len(RAG_CONTEXT), "optimized": True}
 
 @app.get("/context/preview")
-async def context_preview(n: int = 800):
+async def context_preview(n: int = 1500):
     """Mostra uma amostra do contexto carregado (para verificação)."""
-    n = max(0, min(n, 5000))
-    return {"preview": RAG_CONTEXT[:n], "len": len(RAG_CONTEXT)}
+    n = max(0, min(n, 8000))
+    return {
+        "preview": RAG_CONTEXT[:n], 
+        "len": len(RAG_CONTEXT),
+        "optimizations": "Priorização de arquivos ativada"
+    }
+
+# Novo endpoint para testar detecção de intenção
+@app.post("/test-intent")
+async def test_intent(message: str):
+    """Testa a detecção de intenção para uma mensagem."""
+    intent = detect_user_intent(message)
+    return {
+        "message": message,
+        "intent": intent,
+        "timestamp": monotonic()
+    }
 
 # ======================
 # Worker com lock por contato
@@ -370,7 +590,7 @@ async def process_and_reply(phone: str, message: str, user_name: str):
 # ======================
 async def rag_watcher():
     global _RAG_SIG, RAG_CONTEXT
-    logger.info(f"👀 RAG watcher ativo em '{RAG_DIR}' a cada {RAG_WATCH_INTERVAL}s")
+    logger.info(f"👀 RAG watcher OTIMIZADO ativo em '{RAG_DIR}' a cada {RAG_WATCH_INTERVAL}s")
     while True:
         try:
             sig = data_signature()
@@ -388,7 +608,12 @@ async def rag_watcher():
 # ======================
 @app.on_event("startup")
 async def startup():
-    logger.info("🚀 WhatsApp AI Agent v2.1 iniciado")
+    logger.info("🚀 WhatsApp AI Agent v2.1 OTIMIZADO iniciado")
+    logger.info("⚡ OTIMIZAÇÕES ATIVAS:")
+    logger.info("   • Prompt inteligente com detecção de intenção")
+    logger.info("   • RAG com priorização de arquivos importantes")
+    logger.info("   • Parâmetros IA otimizados para conversão")
+    logger.info("   • Fluxo consultivo por tipo de interesse")
     logger.info(f"📄 Contexto RAG: {len(RAG_CONTEXT)} caracteres")
     logger.info(f"🤖 Modo IA: {'DRY_RUN (teste)' if AI_DRY_RUN else 'REAL (OpenAI)'}")
     logger.info(f"📱 MEGA API: {'configurada' if (MEGA_API_TOKEN and MEGA_INSTANCE_ID) else 'NÃO CONFIGURADA'}")
