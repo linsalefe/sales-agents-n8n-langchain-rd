@@ -1,11 +1,14 @@
-# api/main.py - WhatsApp AI Agent v2.1 NATURAL (histórico curto + anti-reset)
+# api/main.py - WhatsApp AI Agent v2.2 NATURAL (catálogo dinâmico + histórico curto + guard-rails)
 
 import os
+import json
 import asyncio
 from time import monotonic
 from collections import defaultdict, deque
-from typing import Dict, Any, Optional
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, Tuple
 import hashlib
+import unicodedata
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel
@@ -46,7 +49,7 @@ MEGA_API_BASE_URL = os.getenv("MEGA_API_BASE_URL", "https://apistart01.megaapi.c
 MEGA_API_TOKEN = os.getenv("MEGA_API_TOKEN", "")
 MEGA_INSTANCE_ID = os.getenv("MEGA_INSTANCE_ID", "")
 
-app = FastAPI(title="WhatsApp AI Agent", version="2.1")
+app = FastAPI(title="WhatsApp AI Agent", version="2.2")
 
 # ======================
 # Modelos
@@ -62,14 +65,81 @@ class SendMessageRequest(BaseModel):
     message: str
 
 # ======================
-# Estados
+# Estados e memória curta
 # ======================
-LAST_SENT: Dict[str, tuple[str, float]] = {}
+LAST_SENT: Dict[str, Tuple[str, float]] = {}
 DEDUP: Dict[str, float] = {}
 LOCKS: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 CONVERSATION_HISTORY: Dict[str, int] = defaultdict(int)
-# Histórico curto por contato (memória de contexto)
 CHAT_HISTORY: Dict[str, deque] = defaultdict(lambda: deque(maxlen=12))
+
+@dataclass
+class SessionState:
+    product_slug: Optional[str] = None  # slug do produto selecionado
+    last_question: Optional[str] = None
+
+SESSION: Dict[str, SessionState] = defaultdict(SessionState)
+
+# ======================
+# Catálogo dinâmico (JSON em data/catalog.json)
+# ======================
+CATALOG_PATH = None
+CATALOG: Dict[str, Any] = {}          # {"products":[...]}
+PRODUCT_BY_SLUG: Dict[str, Dict[str, Any]] = {}
+ALIAS_INDEX: Dict[str, str] = {}       # alias_normalizado -> slug
+
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn").lower().strip()
+
+def _catalog_path() -> str:
+    global CATALOG_PATH
+    if CATALOG_PATH:
+        return CATALOG_PATH
+    CATALOG_PATH = os.path.join(RAG_DIR, "catalog.json")
+    return CATALOG_PATH
+
+def load_catalog() -> None:
+    """Carrega o catálogo JSON (produtos, aliases, links) de data/catalog.json."""
+    global CATALOG, PRODUCT_BY_SLUG, ALIAS_INDEX
+    PRODUCT_BY_SLUG = {}
+    ALIAS_INDEX = {}
+    path = _catalog_path()
+    if not os.path.exists(path):
+        logger.warning(f"📦 Catálogo não encontrado em {path} (seguindo sem catálogo).")
+        CATALOG = {"products": []}
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            CATALOG = json.load(f)
+    except Exception as e:
+        logger.error(f"Erro ao ler catálogo: {e}")
+        CATALOG = {"products": []}
+        return
+
+    for p in CATALOG.get("products", []):
+        slug = p.get("slug")
+        if not slug:
+            continue
+        PRODUCT_BY_SLUG[slug] = p
+        aliases = list(p.get("aliases", []))
+        title = p.get("title") or ""
+        if title:
+            aliases.append(title)
+        for a in aliases:
+            a_norm = _strip_accents(a)
+            if not a_norm:
+                continue
+            ALIAS_INDEX.setdefault(a_norm, slug)
+
+def find_product_in_text(text: str) -> Optional[str]:
+    """Procura por algum alias do catálogo no texto e retorna o slug encontrado."""
+    if not ALIAS_INDEX:
+        return None
+    t = _strip_accents(text)
+    for alias_norm, slug in ALIAS_INDEX.items():
+        if alias_norm and alias_norm in t:
+            return slug
+    return None
 
 # ======================
 # RAG otimizado
@@ -87,7 +157,7 @@ def load_context() -> str:
     priority_files, regular_files = [], []
     for root, _, files in os.walk(data_dir):
         for file in sorted(files):
-            if not file.endswith(".txt"):
+            if not (file.endswith(".txt")):
                 continue
             fp = os.path.join(root, file)
             try:
@@ -117,12 +187,15 @@ def load_context() -> str:
     return full
 
 def data_signature() -> str:
+    """Hash do estado de data/ para detectar mudanças (.txt e .json)."""
     h = hashlib.sha1()
     base = RAG_DIR
     if not os.path.exists(base):
         return ""
     for root, _, files in os.walk(base):
-        for file in sorted(f for f in files if f.endswith(".txt")):
+        for file in sorted(files):
+            if not (file.endswith(".txt") or file.endswith(".json")):
+                continue
             fp = os.path.join(root, file)
             try:
                 st = os.stat(fp)
@@ -135,6 +208,7 @@ def data_signature() -> str:
     return h.hexdigest()
 
 RAG_CONTEXT = load_context()
+load_catalog()
 _RAG_SIG = data_signature()
 
 # ======================
@@ -170,7 +244,7 @@ def detect_user_intent(message: str) -> str:
         return 'positive_response'
     if any(w in m for w in ['não', 'nao', 'talvez', 'depois', 'mais tarde']):
         return 'negative_response'
-    if any(city in m for city in ['maceió', 'belém', 'florianópolis', 'floripa', 'vitória', 'vitoria', 'online']):
+    if find_product_in_text(message):
         return 'city_specific'
     return 'general'
 
@@ -183,10 +257,6 @@ def should_use_name(phone: str) -> bool:
 # ======================
 def _digits_only(s: str) -> str:
     return "".join(ch for ch in s if ch.isdigit())
-
-def to_wa_jid(phone: str) -> str:
-    digits = _digits_only(phone)
-    return f"{digits}@s.whatsapp.net" if digits else phone
 
 def _unwrap_ephemeral(msg: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(msg, dict) and "ephemeralMessage" in msg:
@@ -204,28 +274,44 @@ def _extract_text(msg: Dict[str, Any]) -> str:
         or ""
     ).strip()
 
+def update_session_with_text(phone: str, text: str):
+    """Atualiza o estado do contato a partir do texto (seleção de produto)."""
+    slug = find_product_in_text(text)
+    if slug:
+        SESSION[phone].product_slug = slug
+
 # ======================
-# IA Agent NATURAL (histórico curto + anti-reset)
+# IA Agent NATURAL (histórico curto + catálogo)
 # ======================
 async def generate_response(user_message: str, user_name: str = "", phone: str = "") -> str:
     if AI_DRY_RUN:
         return f"[TESTE] Olá! Vi sua mensagem sobre '{user_message[:30]}...'. Como posso ajudar?"
     if not OPENAI_API_KEY or OpenAI is None:
         return "Desculpe, estou com problemas técnicos. Tente mais tarde."
-
     try:
         client = OpenAI(api_key=OPENAI_API_KEY, timeout=25)
 
         intent = detect_user_intent(user_message)
         CONVERSATION_HISTORY[phone] += 1
-        conversation_count = CONVERSATION_HISTORY[phone]
+        count = CONVERSATION_HISTORY[phone]
         use_name = should_use_name(phone) if user_name else False
-        logger.info(f"🎯 Conversa #{conversation_count}, intenção: {intent}, usar nome: {use_name}")
 
-        # Últimos turnos ajudam a interpretar “Sim/Ok”
+        # histórico curto
         history = list(CHAT_HISTORY.get(phone, deque()))
         last_assistant = next((m["content"] for m in reversed(history) if m.get("role") == "assistant"), "")
         last_user = next((m["content"] for m in reversed(history) if m.get("role") == "user"), "")
+
+        # estado corrente
+        st = SESSION.get(phone, SessionState())
+        prod = PRODUCT_BY_SLUG.get(st.product_slug or "", {})
+        prod_title = prod.get("title", "")
+        prod_type = prod.get("type", "")
+        enroll_url = prod.get("enroll_url", "")
+        program_url = prod.get("program_url", "")
+        dates = prod.get("dates", "")
+        location = prod.get("location", "")
+
+        logger.info(f"🎯 Conversa #{count} | intenção={intent} | produto={st.product_slug or 'indefinido'}")
 
         system_prompt = f"""Você é Nat, atendente do CENAT (Centro de Estudos em Saúde Mental).
 PERSONALIDADE: simpática, natural e prestativa. Responda como pessoa real no WhatsApp.
@@ -233,19 +319,25 @@ PERSONALIDADE: simpática, natural e prestativa. Responda como pessoa real no Wh
 CONTEXTO CENAT:
 {RAG_CONTEXT}
 
-REGRAS DE FLUXO (ANTI-RESET):
-• NÃO volte para perguntas genéricas se o histórico já estreitou o tema.
-• Interprete “Sim/Ok/Beleza” como resposta à ÚLTIMA PERGUNTA feita pela Nat.
-• Se a cidade já foi escolhida (ex.: Vitória) e o usuário pedir “programação” ou “inscrição”, mantenha essa cidade.
-• Seja breve (2–3 linhas), ofereça o próximo passo, evite repetição e formalidade.
-• Se faltar dado exato, ofereça link ou conexão com a equipe. Máx. 1 emoji opcional.
+ESTADO ATUAL (use para manter o fio da conversa):
+• produto_selecionado: {prod_title or 'indefinido'} (tipo: {prod_type or '—'})
+• datas: {dates or '—'}
+• local: {location or '—'}
+• link_inscrição: {enroll_url or '—'}
+• link_programação: {program_url or '—'}
+
+REGRAS IMPORTANTES:
+• NÃO volte ao menu genérico se já houver produto_selecionado.
+• Se o usuário pedir "inscrição" e houver link_inscrição, responda direto com esse link (sem citar outros).
+• Se pedir "programação" e houver link_programação, responda com esse link do produto selecionado.
+• Interprete "Sim/Ok/Beleza" como resposta à ÚLTIMA pergunta feita pela Nat.
+• 2–3 linhas, próximas do natural. Se faltar dado, ofereça o link ou encaminhamento. Máx. 1 emoji opcional.
 
 ÚLTIMO TURNO (para manter o fio):
 • NAT: {last_assistant[-320:]}
 • USUÁRIO: {last_user[-320:]}
 """
 
-        # Monta mensagens com histórico + msg atual
         messages = [{"role": "system", "content": system_prompt}] + history + [
             {"role": "user", "content": user_message}
         ]
@@ -260,7 +352,6 @@ REGRAS DE FLUXO (ANTI-RESET):
             top_p=0.9,
         )
         response = resp.choices[0].message.content or "Desculpe, não consegui processar sua mensagem."
-        logger.info(f"💬 Resposta #{conversation_count} (intenção: {intent}): {response[:80]}...")
         return response.strip()
 
     except Exception as e:
@@ -299,7 +390,7 @@ async def send_whatsapp(phone: str, message: str) -> bool:
 async def health():
     return {
         "status": "ok",
-        "version": "2.1-NATURAL",
+        "version": "2.2-NATURAL",
         "ai_mode": "DRY_RUN" if AI_DRY_RUN else "REAL",
         "context_loaded": len(RAG_CONTEXT) > 10,
         "mega_configured": bool(MEGA_API_TOKEN and MEGA_INSTANCE_ID),
@@ -308,7 +399,8 @@ async def health():
             "context_aware": True,
             "name_usage_control": True,
             "intent_detection": True,
-            "chat_history_window": 12
+            "chat_history_window": 12,
+            "catalog_driven": True
         },
         "conversation_stats": {
             "active_conversations": len(CONVERSATION_HISTORY),
@@ -324,6 +416,7 @@ async def health():
             "rag_watch_interval": RAG_WATCH_INTERVAL,
             "rag_dir": RAG_DIR,
             "context_length": len(RAG_CONTEXT),
+            "catalog_products": len(CATALOG.get("products", [])),
         },
     }
 
@@ -373,6 +466,9 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         return {"status": "ignored", "reason": "duplicate"}
     DEDUP[dedup_key] = now
 
+    # Atualiza estado pelo texto (produto)
+    update_session_with_text(phone, text)
+
     background_tasks.add_task(process_and_reply, phone, text, push_name)
     return {"status": "processing"}
 
@@ -398,14 +494,15 @@ async def mega_status():
         logger.error(f"Erro status MEGA: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ====== RAG ======
+# ====== RAG / Catálogo ======
 @app.post("/reload-context")
 async def reload_context():
     global RAG_CONTEXT, _RAG_SIG
     RAG_CONTEXT = load_context()
+    load_catalog()
     _RAG_SIG = data_signature()
-    logger.info(f"🔄 RAG recarregado: {len(RAG_CONTEXT)} caracteres")
-    return {"status": "ok", "context_len": len(RAG_CONTEXT), "version": "natural"}
+    logger.info(f"🔄 RAG+Catálogo recarregados: ctx={len(RAG_CONTEXT)} chars | produtos={len(CATALOG.get('products', []))}")
+    return {"status": "ok", "context_len": len(RAG_CONTEXT), "products": len(CATALOG.get("products", [])), "version": "natural"}
 
 @app.get("/context/preview")
 async def context_preview(n: int = 1500):
@@ -418,6 +515,7 @@ async def reset_conversation(phone: str):
     clean = _digits_only(phone)
     CONVERSATION_HISTORY.pop(clean, None)
     CHAT_HISTORY.pop(clean, None)
+    SESSION.pop(clean, None)
     return {"status": "reset", "phone": clean}
 
 @app.get("/conversation-stats")
@@ -425,25 +523,38 @@ async def conversation_stats():
     return {
         "active_conversations": len(CONVERSATION_HISTORY),
         "total_messages": sum(CONVERSATION_HISTORY.values()),
-        "conversations": {p: c for p, c in CONVERSATION_HISTORY.items()},
         "history_window": 12,
+        "sessions": {p: {"product_slug": SESSION[p].product_slug} for p in SESSION},
+        "catalog_products": len(CATALOG.get("products", [])),
     }
 
 # ======================
-# Worker
+# Worker (guard-rails determinísticos)
 # ======================
 async def process_and_reply(phone: str, message: str, user_name: str):
     try:
         async with LOCKS[phone]:
-            # salva turno do usuário
             CHAT_HISTORY[phone].append({"role": "user", "content": message})
+
+            intent_now = detect_user_intent(message)
+
+            # Resposta IA (usa histórico + estado + catálogo)
             response = await generate_response(message, user_name, phone)
-            logger.info(f"🤖 IA gerou resposta natural: {response}")
-            # salva turno da Nat
+
+            # Guard-rails: se já temos produto e a intenção é direta, responda de forma determinística
+            st = SESSION.get(phone, SessionState())
+            prod = PRODUCT_BY_SLUG.get(st.product_slug or "", {})
+
+            if st.product_slug and prod:
+                if intent_now == "enrollment" and prod.get("enroll_url"):
+                    response = f"Perfeito! Para se inscrever em **{prod.get('title','')}**, acesse {prod['enroll_url']} e siga as instruções. Qualquer dúvida, estou aqui. 🙂"
+                elif intent_now == "schedule" and prod.get("program_url"):
+                    response = f"A programação de **{prod.get('title','')}** está em {prod['program_url']}. Quer que eu destaque os principais horários?"
+
             CHAT_HISTORY[phone].append({"role": "assistant", "content": response})
             ok = await send_whatsapp(phone, response)
             if ok:
-                logger.info(f"✅ Resposta enviada para {user_name}: {response[:100]}...")
+                logger.info(f"✅ Resposta enviada para {user_name}: {response[:120]}...")
             else:
                 logger.error(f"❌ Falha ao enviar para {user_name}")
                 logger.info(f"📝 Resposta que seria enviada: {response}")
@@ -451,7 +562,7 @@ async def process_and_reply(phone: str, message: str, user_name: str):
         logger.error(f"Erro no processamento: {e}")
 
 # ======================
-# RAG watcher
+# Watcher (RAG + Catálogo)
 # ======================
 async def rag_watcher():
     global _RAG_SIG, RAG_CONTEXT
@@ -460,10 +571,11 @@ async def rag_watcher():
         try:
             sig = data_signature()
             if sig != _RAG_SIG:
-                logger.info("🪄 Mudanças detectadas em data/: recarregando RAG...")
+                logger.info("🪄 Mudanças detectadas em data/: recarregando RAG + Catálogo...")
                 RAG_CONTEXT = load_context()
+                load_catalog()
                 _RAG_SIG = sig
-                logger.info(f"🔄 RAG recarregado automaticamente: {len(RAG_CONTEXT)} caracteres")
+                logger.info(f"🔄 Recarregado: ctx={len(RAG_CONTEXT)} chars | produtos={len(CATALOG.get('products', []))}")
         except Exception as e:
             logger.warning(f"Watcher RAG: {e}")
         await asyncio.sleep(RAG_WATCH_INTERVAL)
@@ -473,9 +585,9 @@ async def rag_watcher():
 # ======================
 @app.on_event("startup")
 async def startup():
-    logger.info("🚀 WhatsApp AI Agent v2.1 CONVERSAÇÃO NATURAL iniciado")
-    logger.info("💬 Melhorias: histórico curto (12), anti-reset de assunto, uso inteligente do nome")
-    logger.info(f"📄 Contexto RAG: {len(RAG_CONTEXT)} chars | 🤖 Modo IA: {'DRY_RUN' if AI_DRY_RUN else 'REAL'}")
+    logger.info("🚀 WhatsApp AI Agent v2.2 NATURAL iniciado (catálogo dinâmico)")
+    logger.info(f"📄 Contexto RAG: {len(RAG_CONTEXT)} chars | Produtos no catálogo: {len(CATALOG.get('products', []))}")
+    logger.info(f"🤖 Modo IA: {'DRY_RUN (teste)' if AI_DRY_RUN else 'REAL (OpenAI)'}")
     logger.info(f"📱 MEGA API: {'configurada' if (MEGA_API_TOKEN and MEGA_INSTANCE_ID) else 'NÃO CONFIGURADA'}")
     logger.info(f"🧰 Flags: IGNORE_FROM_ME={IGNORE_FROM_ME}, DEDUP_TTL={DEDUP_TTL}s")
     logger.info(f"📂 RAG_DIR='{RAG_DIR}', AUTO_RELOAD={RAG_AUTO_RELOAD}, INTERVALO={RAG_WATCH_INTERVAL}s")
