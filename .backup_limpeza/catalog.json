@@ -1,0 +1,44 @@
+{
+  "products": [
+    {
+      "slug": "congresso-floripa-2025",
+      "title": "III Congresso Internacional: Boas Práticas em Saúde Mental - Florianópolis/SC",
+      "type": "congresso",
+      "aliases": ["Florianópolis","Florianopolis","Floripa","Congresso de Floripa","Boas Práticas"],
+      "dates": "21-22/10/2025",
+      "location": "Centro de Eventos Jorge J. Daux Boabaid",
+      "enroll_url": "https://cenatsaudemental.com/boas-praticas-em-saude-mental-floripa-2025",
+      "program_url": "https://cenatsaudemental.com/boas-praticas-em-saude-mental-floripa-2025#programacao"
+    },
+    {
+      "slug": "congresso-vitoria-2025",
+      "title": "IV Congresso Internacional: Novas Abordagens em Saúde Mental - Vitória/ES",
+      "type": "congresso",
+      "aliases": ["Vitória","Vitoria","Congresso de Vitória","Novas Abordagens"],
+      "dates": "24-25/10/2025",
+      "location": "Vitória Grand Hall",
+      "enroll_url": "https://cenatsaudemental.com/novas-abordagens-sm-vitoria-2025",
+      "program_url": "https://cenatsaudemental.com/novas-abordagens-sm-vitoria-2025#programacao"
+    },
+    {
+      "slug": "congresso-ouvidores-2025",
+      "title": "Congresso de Ouvidores (online) 2025",
+      "type": "congresso",
+      "aliases": ["Ouvidores","Online","Congresso Online"],
+      "dates": "05-06/12/2025",
+      "location": "Online",
+      "enroll_url": "https://cenatsaudemental.com/congresso-online-ouvidores-2025",
+      "program_url": "https://cenatsaudemental.com/congresso-online-ouvidores-2025#programacao"
+    },
+    {
+      "slug": "curso-psicoterapia-breve-2025",
+      "title": "Curso de Psicoterapia Breve (online)",
+      "type": "curso",
+      "aliases": ["psicoterapia breve","curso psicoterapia"],
+      "dates": "Mar–Jun/2025",
+      "location": "Online",
+      "enroll_url": "https://cenatsaudemental.com/curso-psicoterapia-breve-2025",
+      "program_url": "https://cenatsaudemental.com/curso-psicoterapia-breve-2025#programa"
+    }
+  ]
+}
