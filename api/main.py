@@ -1,12 +1,12 @@
-# api/main.py - WhatsApp AI Agent v3.0 CENAT
-# Atualizado com Guia de Respostas Padronizadas + Contexto Aguçado
+# api/main.py - WhatsApp AI Agent v3.5 CENAT
+# Respeita quando o cliente quer encerrar
 
 import os
 import asyncio
 import re
 from time import monotonic
 from collections import defaultdict
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 import hashlib
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
@@ -44,10 +44,9 @@ MEGA_API_BASE_URL = os.getenv("MEGA_API_BASE_URL", "https://apistart01.megaapi.c
 MEGA_API_TOKEN = os.getenv("MEGA_API_TOKEN", "")
 MEGA_INSTANCE_ID = os.getenv("MEGA_INSTANCE_ID", "")
 
-# Número do atendimento humano
 WHATSAPP_ATENDIMENTO = "+55 47 99242-8886"
 
-app = FastAPI(title="WhatsApp AI Agent CENAT", version="3.0")
+app = FastAPI(title="WhatsApp AI Agent CENAT", version="3.5")
 
 # ======================
 # Modelos
@@ -69,8 +68,76 @@ LAST_SENT: Dict[str, tuple[str, float]] = {}
 DEDUP: Dict[str, float] = {}
 LOCKS: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-# Histórico de conversas por usuário (para contexto aguçado)
 CONVERSATION_HISTORY: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+LAST_CONGRESS: Dict[str, str] = {}
+
+# ======================
+# Detecção de Encerramento
+# ======================
+SINAIS_ENCERRAMENTO = [
+    "não", "nao", "não obrigado", "nao obrigado", "só isso", "so isso",
+    "era só isso", "era so isso", "tranquilo", "valeu", "obrigado",
+    "obrigada", "tudo bem", "tá bom", "ta bom", "ok obrigado",
+    "agora não", "agora nao", "depois", "mais tarde"
+]
+
+def detectar_encerramento(mensagem: str) -> bool:
+    """Detecta se o cliente quer encerrar a conversa."""
+    msg_lower = mensagem.lower().strip()
+    
+    # Mensagens curtas que são claramente encerramento
+    if msg_lower in ["não", "nao", "não obrigado", "nao obrigado", "só isso", "so isso", "valeu", "tranquilo", "ok"]:
+        return True
+    
+    # Frases de encerramento
+    for sinal in SINAIS_ENCERRAMENTO:
+        if sinal in msg_lower:
+            return True
+    
+    return False
+
+# ======================
+# Mapa de Congressos
+# ======================
+CONGRESSOS_MAP = {
+    "maceio": {
+        "nome": "Maceió/AL",
+        "data": "05 e 06/09",
+        "url": "https://cenatsaudemental.com/boas-praticas-em-saude-mental-maceio-2025",
+        "palavras": ["maceió", "maceio", "alagoas", "al"]
+    },
+    "belem": {
+        "nome": "Belém/PA",
+        "data": "09 e 10/09",
+        "url": "https://cenatsaudemental.com/v-congresso-internacional-bpsm-belem-2025",
+        "palavras": ["belém", "belem", "pará", "para", "pa"]
+    },
+    "floripa": {
+        "nome": "Florianópolis/SC",
+        "data": "21 e 22/10",
+        "url": "https://cenatsaudemental.com/boas-praticas-em-saude-mental-floripa-2025",
+        "palavras": ["florianópolis", "florianopolis", "floripa", "santa catarina", "sc"]
+    },
+    "vitoria": {
+        "nome": "Vitória/ES",
+        "data": "24 e 25/10",
+        "url": "https://cenatsaudemental.com/novas-abordagens-sm-vitoria-2025",
+        "palavras": ["vitória", "vitoria", "espírito santo", "espirito santo", "es"]
+    },
+    "ouvidores": {
+        "nome": "Ouvidores de Vozes (Online)",
+        "data": "05 e 06/12",
+        "url": "https://cenatsaudemental.com/congresso-online-ouvidores-2025",
+        "palavras": ["ouvidores", "ouvidor", "vozes", "online"]
+    }
+}
+
+def detectar_congresso_especifico(mensagem: str) -> Optional[str]:
+    msg_lower = mensagem.lower()
+    for key, info in CONGRESSOS_MAP.items():
+        if any(palavra in msg_lower for palavra in info["palavras"]):
+            return key
+    return None
 
 # ======================
 # RAG simples
@@ -116,205 +183,192 @@ RAG_CONTEXT = load_context()
 _RAG_SIG = data_signature()
 
 # ======================
-# Sistema de Intenções (baseado no PDF + ajustes)
+# Sistema de Intenções
 # ======================
 INTENCOES = {
-    "saudacao": ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "oie", "opa"],
-    # removido "seminário" daqui para não conflitar com gravação
-    "congressos": ["congresso", "eventos", "próximos eventos", "onde tem evento", "palestras"],
+    "saudacao": ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite"],
+    "congressos_lista": ["congressos", "eventos", "próximos eventos", "quais eventos"],
+    "congresso_programacao": ["programação", "programacao", "grade", "horários", "cronograma"],
+    "congresso_link": ["link", "site"],
     "certificados": ["certificado", "certificação", "diploma"],
-    "reembolso": ["reembolso", "devolução", "devolver dinheiro", "cancelar", "estornar"],
-    "trabalho": ["trabalho", "submeter", "submissão", "apresentação", "pôster", "poster", "banner", "artigo"],
-    # nova intenção priorizada para status/devolutiva de trabalho
-    "trabalho_nao_recebi": [
-        "não recebi", "nao recebi", "sem retorno", "sem devolutiva", "devolutiva",
-        "status do trabalho", "status da submissão", "status da submissao",
-        "foi aceito", "nao chegou email", "não chegou e-mail"
-    ],
-    "gravacao": ["gravação", "gravado", "assistir depois", "replay", "reprise", "seminário", "seminario"],
-    "transmissao": ["transmissão", "não consigo assistir", "não abre", "não funciona", "travando"],
-    "publicacao": ["publicação", "anais", "publicado"],
-    "programacao": ["programação", "horários", "grade", "agenda", "cronograma"],
-    "ingresso": ["ingresso", "receber ingresso", "link evento", "acesso", "ingresso por e-mail", "ingresso por email"],
-    "empenho": ["empenho", "nota de empenho", "órgão público", "prefeitura"],
-    "comunidade": ["comunidade", "cursos gravados", "assinatura", "plataforma"],
-    # nova intenção: cliente perguntando a lista de cursos
-    "comunidade_cursos": [
-        "quais são os cursos", "quais sao os cursos", "lista de cursos", "cursos disponíveis",
-        "cursos disponiveis", "ementas", "grade", "catálogo", "catalogo"
-    ],
-    "intercambio": ["intercâmbio", "intercambio", "viagem", "lisboa", "buenos aires", "exterior"],
-    "pos": ["pós", "pos graduação", "pos-graduação", "especialização", "turmas", "mestrado"],
-    "desconto": ["desconto", "promoção", "cupom", "valor", "preço", "barato"],
-    "pagamento": ["pagamento", "cartão não passou", "erro pagamento", "boleto", "pix"],
+    "reembolso": ["reembolso", "devolução", "cancelar", "estornar"],
+    "trabalho_submeter": ["submeter trabalho", "enviar trabalho", "submissão"],
+    "trabalho_status": ["não recebi devolutiva", "sem retorno trabalho", "status trabalho"],
+    "trabalho_apresentacao": ["apresentação trabalho", "apresentar trabalho", "pôster", "poster", "banner"],
+    "gravacao": ["gravação", "gravado", "assistir depois", "replay"],
+    "transmissao_problema": ["transmissão não funciona", "não abre transmissão", "travando"],
+    "ingresso": ["não recebi ingresso", "link evento", "acesso evento"],
+    "comunidade": ["comunidade", "cursos gravados", "assinatura"],
+    "comunidade_cursos": ["lista de cursos", "cursos disponíveis", "ementas"],
+    "intercambio": ["intercâmbio", "intercambio", "viagem", "exterior"],
+    "pos": ["pós", "pos graduação", "especialização"],
+    "desconto": ["desconto", "promoção", "cupom", "valor", "preço"],
+    "pagamento_erro": ["cartão não passou", "erro pagamento"],
+    "boleto": ["novo boleto", "segunda via boleto", "perdi prazo"],
+    "empenho": ["empenho", "nota de empenho"],
+    "materiais_gratuitos": ["materiais gratuitos", "material grátis", "conteúdo gratuito"],
 }
 
 def detectar_intencao(mensagem: str) -> str:
-    """Detecta a intenção da mensagem com base em palavras-chave."""
     msg_lower = mensagem.lower()
-
-    # Prioridade para saudação se for muito curta
+    
     if len(msg_lower.split()) <= 2:
         for palavra in INTENCOES["saudacao"]:
-            if palavra in msg_lower:
+            if palavra == msg_lower.strip():
                 return "saudacao"
-
-    # PRIORIDADES ESPECIAIS
-    # 1) Dúvidas sobre gravação (antes de congressos etc.)
-    for palavra in INTENCOES.get("gravacao", []):
-        if palavra in msg_lower:
-            return "gravacao"
-
-    # 2) Status/devolutiva de trabalho
-    for palavra in INTENCOES.get("trabalho_nao_recebi", []):
-        if palavra in msg_lower:
-            return "trabalho_nao_recebi"
-
-    # 3) Comunidade - pedido de lista de cursos
-    for palavra in INTENCOES.get("comunidade_cursos", []):
-        if palavra in msg_lower:
-            return "comunidade_cursos"
-
-    # Demais intenções
+    
+    if any(p in msg_lower for p in ["programação", "programacao", "grade", "horários"]):
+        return "congresso_programacao"
+    
     for intencao, palavras in INTENCOES.items():
-        if intencao in ("gravacao", "trabalho_nao_recebi", "comunidade_cursos"):
-            continue
         for palavra in palavras:
             if palavra in msg_lower:
                 return intencao
-
+    
     return "geral"
 
 # ======================
 # Respostas Padronizadas
 # ======================
 RESPOSTAS_PADRAO = {
-    "saudacao": """Olá, tudo bem? Seja bem-vindo(a)! Me conta: Como posso te ajudar? 
+    "encerramento": """Tudo bem! Qualquer dúvida, é só chamar. Tenha um ótimo dia!""",
 
-Posso te auxiliar com:
-1. Congressos e eventos
-2. Certificados
-3. Pós-graduação
-4. Comunidade online
-5. Intercâmbios
+    "saudacao": """Olá! Seja bem-vindo(a) ao CENAT. Como posso ajudar?
 
-Sobre o que você deseja saber?""",
+Posso te auxiliar com congressos, certificados, pós-graduação, comunidade online ou intercâmbios.""",
 
-    "congressos": """Perfeito! Esses são os próximos congressos confirmados:
+    "congressos_lista": """Temos esses congressos confirmados para 2025:
 
-1. MACEIÓ/AL – 05 e 06/09
-2. BELÉM/PA – 09 e 10/09
-3. FLORIANÓPOLIS/SC – 21 e 22/10
-4. VITÓRIA/ES – 24 e 25/10
-5. OUVIDORES DE VOZES (Online) – 05 e 06/12
+- Maceió/AL – 05 e 06/09
+- Belém/PA – 09 e 10/09  
+- Florianópolis/SC – 21 e 22/10
+- Vitória/ES – 24 e 25/10
+- Ouvidores de Vozes (Online) – 05 e 06/12
 
-Gostaria de saber mais detalhes sobre algum deles?""",
+Sobre qual você gostaria de saber mais?""",
 
-    "certificados_info": """Todos os nossos congressos e cursos emitem certificado. A qual evento ou curso você se refere? Me informe o título completo para que possamos localizar!
+    "certificados_congressos": """Para certificados de congressos/eventos/seminários, acesse:
 
-⚠️ Aviso: Certificados de participação têm prazo de até 7 dias úteis. Os de apresentação, até 15 dias úteis após o evento.""",
+https://doity.com.br/area-do-participante/certificado
 
-    # Reembolso: encaminha direto ao atendimento humano (sem pedir dados antes)
+Preencha com o e-mail usado na inscrição. Se tiver dificuldades, me avise!""",
+
+    "certificados_cursos": """#HUMANO
+
+Para certificados de cursos/comunidade:
+
+WhatsApp: +55 47 99242-8886
+E-mail: atendimento@cenatcursos.com.br""",
+
     "reembolso": """#HUMANO
 
-Recomendo entrar em contato com o nosso atendimento humano para tratar do seu reembolso.
-
-Envie um e-mail para atendimento@cenatcursos.com.br com:
-- Seu nome completo
-- Nome do evento
-- Forma de pagamento e data da compra
-- Motivo do reembolso
-
-Se preferir, você também pode falar pelo WhatsApp: +55 47 99242-8886.
-
-Nossa equipe verifica o caso e orienta os próximos passos.""",
-
-    "trabalho_info": """Qual sua dúvida sobre submissão? Você quer informações sobre confecção de banners e formatação?
-
-Geralmente enviamos essas orientações no e-mail do autor principal quando o trabalho é aceito.
-
-📋 FORMATO DO PÔSTER:
-- Vertical: 90cm (largura) x 120cm (altura)
-- Com corda para pendurar
-- Conteúdo: título, autores, instituição, eixo temático, referências
-
-Se precisar de mais ajuda específica, me avise!""",
-
-    # Quando o cliente diz que submeteu e não recebeu retorno → atendimento humano
-    "trabalho_nao_recebi": """#HUMANO
-
-Vou te transferir para nossa equipe para verificar sua submissão.
+Para solicitar reembolso:
 
 WhatsApp: +55 47 99242-8886
 E-mail: atendimento@cenatcursos.com.br""",
 
-    # Gravação: texto solicitado
-    "gravacao": """Sim! Todos os nossos eventos online ficam disponíveis para acesso posterior, porém você precisa estar inscrito para ter acesso às gravações, ok? 
+    "trabalho_submeter": """#HUMANO
 
-Se não conseguir assistir de forma síncrona, podemos liberar o acesso após a finalização completa do evento.
+Para submeter trabalhos:
 
-Para solicitar, envie um e-mail para atendimento@cenatcursos.com.br com:
-- Seu nome completo
-- Nome do evento
-- (se houver) detalhes sobre sua apresentação/trabalho
+WhatsApp: +55 47 99242-8886
+E-mail: atendimento@cenatcursos.com.br""",
 
-Se preferir, fale no WhatsApp: +55 47 99242-8886.""",
+    "trabalho_status": """#HUMANO
 
-    # Ingresso: primeiro checar e-mail/Spam, depois atendimento humano
+Para verificar status:
+
+WhatsApp: +55 47 99242-8886
+E-mail: atendimento@cenatcursos.com.br""",
+
+    "trabalho_apresentacao": """#HUMANO
+
+Para orientações sobre apresentação:
+
+WhatsApp: +55 47 99242-8886
+E-mail: atendimento@cenatcursos.com.br""",
+
+    "gravacao": """#HUMANO
+
+Para acesso a gravações:
+
+WhatsApp: +55 47 99242-8886
+E-mail: atendimento@cenatcursos.com.br""",
+
+    "transmissao_problema": """#HUMANO
+
+Para problemas técnicos:
+
+WhatsApp: +55 47 99242-8886
+E-mail: atendimento@cenatcursos.com.br""",
+
     "ingresso": """#HUMANO
 
-Antes de tudo, recomendo verificar novamente sua caixa de e-mail (inclusive Spam/Lixo eletrônico), pois o ingresso costuma chegar por lá.
+Verifique seu e-mail (inclusive Spam).
 
-Se não localizar, nosso atendimento humano pode te ajudar rapidamente a reenviar o link de acesso:
+Se não localizar:
+WhatsApp: +55 47 99242-8886""",
+
+    "comunidade": """A Comunidade Novas Abordagens em Saúde Mental oferece:
+
+- Mais de 30 cursos gravados (~250h)
+- Encontros mensais ao vivo
+- Certificados de 20-80h
+
+Inscreva-se:
+https://cenatsaudemental.com/comunidademsaudemental
+
+Posso te indicar cursos de alguma área específica?""",
+
+    "comunidade_cursos": """Lista completa:
+https://cenatsaudemental.com/comunidademsaudemental#section-17454852
+
+Quer saber sobre alguma área específica?""",
+
+    "intercambio": """Nossos intercâmbios incluem visitas, workshops, palestras e certificado.
+
+Destinos: Dinamarca, Trieste, Portugal, Inglaterra
+
+https://cenatsaudemental.com/cenat-intercambios
+
+Algum destino te interessa?""",
+
+    "pos": """Para pós-graduação:
+
+E-mail: secretaria@cenatcursos.com.br""",
+
+    "desconto": """Sim, temos descontos:
+
+- Estudantes com carteira
+- Por lote
+- Grupos: 10-20 pessoas (10%) / +20 (15%)
+
+Qual evento te interessa?""",
+
+    "pagamento_erro": """#HUMANO
+
+Para problemas com pagamento:
+
 WhatsApp: +55 47 99242-8886
 E-mail: atendimento@cenatcursos.com.br""",
 
-    # Comunidade (texto baseado no site, sem preço)
-    "comunidade": """A Comunidade Novas Abordagens em Saúde Mental é nossa plataforma com estudos online.
+    "boleto": """#HUMANO
 
-Você terá:
-• +30 cursos gravados (~250h) para ver no seu tempo (acesso por 1 ano);
-• Encontros AO VIVO mensais para discussão de casos e plantão de dúvidas no Zoom;
-• Área exclusiva para assinantes, materiais complementares, documentários e séries;
-• Certificados em cada curso (20–80h) com código de verificação.
+Para nova via de boleto:
 
-Quer que eu te envie o link de inscrição ou as ementas?""",
+WhatsApp: +55 47 99242-8886
+E-mail: atendimento@cenatcursos.com.br""",
 
-    # Comunidade - lista de cursos
-    "comunidade_cursos": """Temos mais de 30 cursos gravados (~250h) com acesso por 1 ano, encontros ao vivo mensais e certificados (20–80h).
+    "empenho": """#HUMANO
 
-A lista completa e sempre atualizada está aqui:
-https://cenatsaudemental.com/comunidademsaudemental#section-17454852
+Para pagamento via empenho:
 
-Posso te enviar as ementas dos cursos que mais combinam com seu interesse. Prefere alguma área (ex.: clínica, infantojuvenil, trabalho/SST, SUS, dependência química)?""",
+WhatsApp: +55 47 99242-8886
+E-mail: atendimento@cenatcursos.com.br""",
 
-    "intercambio": """Olá! Nossos intercâmbios incluem visitas a instituições, workshops, palestras, transportes locais, kit, manual e certificado.
+    "materiais_gratuitos": """Materiais gratuitos:
 
-Temos destinos como Dinamarca, Trieste, Portugal e Inglaterra, com grupos acompanhados por facilitador local.
-
-Link: https://cenatsaudemental.com/cenat-intercambios
-
-Algum desses destinos te interessa mais?""",
-
-    "pos": """Para dúvidas sobre pós-graduação, encaminhe para:
-
-✉️ secretaria@cenatcursos.com.br
-
-Nossa equipe especializada te atende com todos os detalhes sobre turmas, valores e processo seletivo.""",
-
-    "desconto": """Sim! Oferecemos:
-✓ Desconto para estudantes com carteira válida
-✓ Desconto progressivo por lote
-✓ Desconto para grupos (10-20 pessoas: 10% | +20: 15%)
-✓ Combos especiais
-
-Qual evento você tem interesse?""",
-
-    "encerramento": """Disponha! Foi um prazer te atender! Sigo à disposição sempre que precisar.
-
-Ah! Em breve você receberá uma pesquisa sobre o atendimento. Sua opinião é muito importante!
-
-Um abraço. 😊"""
+https://cenatsaudemental.com/""",
 }
 
 # ======================
@@ -345,158 +399,145 @@ def _extract_text(msg: Dict[str, Any]) -> str:
         or ""
     ).strip()
 
-def limitar_linhas(texto: str, max_linhas: int = 10) -> str:
-    """Garante que a resposta tenha no máximo N linhas."""
-    linhas = texto.strip().split('\n')
-    if len(linhas) <= max_linhas:
-        return texto
-    return '\n'.join(linhas[:max_linhas])
-
 # ======================
-# IA Agent com Guia CENAT + Contexto Aguçado
+# IA Agent (RESPEITA ENCERRAMENTO)
 # ======================
 async def generate_response(user_message: str, user_name: str = "", phone: str = "") -> str:
-    """Gera resposta seguindo o Guia de Respostas Padronizadas CENAT com contexto aguçado."""
+    """Gera resposta respeitando quando o cliente quer encerrar."""
     
     if AI_DRY_RUN:
-        return f"[TESTE] Olá {user_name or 'Cliente'}! Vi sua mensagem '{user_message[:30]}...'"
+        return f"Olá {user_name or 'Cliente'}! Como posso ajudar?"
 
-    # 1. Detectar intenção
+    # 1. PRIORIDADE MÁXIMA: Detectar encerramento
+    if detectar_encerramento(user_message):
+        logger.info("🛑 Cliente quer encerrar - respeitando")
+        return RESPOSTAS_PADRAO["encerramento"]
+
+    # 2. Detectar congresso específico
+    congresso_atual = detectar_congresso_especifico(user_message)
+    if congresso_atual:
+        LAST_CONGRESS[phone] = congresso_atual
+        logger.info(f"📍 Congresso: {congresso_atual}")
+
+    # 3. Detectar intenção
     intencao = detectar_intencao(user_message)
-    logger.info(f"Intenção detectada: {intencao} | Mensagem: {user_message[:50]}")
+    logger.info(f"🎯 Intenção: {intencao}")
 
-    # 2. Resposta direta para intenções mapeadas
-    if intencao in [
-        "saudacao", "congressos", "certificados", "reembolso", "gravacao",
-        "comunidade", "comunidade_cursos", "intercambio", "pos", "desconto",
-        "ingresso", "trabalho_nao_recebi", "trabalho"
-    ]:
-        if intencao == "saudacao":
-            return RESPOSTAS_PADRAO["saudacao"]
-        elif intencao == "congressos":
-            return RESPOSTAS_PADRAO["congressos"]
-        elif intencao == "certificados":
-            return RESPOSTAS_PADRAO["certificados_info"]
-        elif intencao == "reembolso":
-            return RESPOSTAS_PADRAO["reembolso"]
-        elif intencao == "gravacao":
-            return RESPOSTAS_PADRAO["gravacao"]
-        elif intencao == "comunidade":
-            return RESPOSTAS_PADRAO["comunidade"]
-        elif intencao == "comunidade_cursos":
-            return RESPOSTAS_PADRAO["comunidade_cursos"]
-        elif intencao == "intercambio":
-            return RESPOSTAS_PADRAO["intercambio"]
-        elif intencao == "pos":
-            return RESPOSTAS_PADRAO["pos"]
-        elif intencao == "desconto":
-            return RESPOSTAS_PADRAO["desconto"]
-        elif intencao == "ingresso":
-            return RESPOSTAS_PADRAO["ingresso"]
-        elif intencao == "trabalho_nao_recebi":
-            return RESPOSTAS_PADRAO["trabalho_nao_recebi"]
-        elif intencao == "trabalho":
-            return RESPOSTAS_PADRAO["trabalho_info"]
+    # 4. PROGRAMAÇÃO
+    if intencao == "congresso_programacao":
+        ultimo = LAST_CONGRESS.get(phone)
+        
+        if ultimo and ultimo in CONGRESSOS_MAP:
+            info = CONGRESSOS_MAP[ultimo]
+            return f"""A programação completa está aqui:
 
-    # 3. Para casos que precisam contexto específico ou IA
+{info['url']}
+
+Qualquer dúvida, me avise!"""
+        else:
+            return """Qual congresso?
+
+- Maceió/AL
+- Belém/PA
+- Florianópolis/SC
+- Vitória/ES
+- Ouvidores de Vozes"""
+
+    # 5. LINK
+    if intencao == "congresso_link":
+        ultimo = LAST_CONGRESS.get(phone)
+        
+        if ultimo and ultimo in CONGRESSOS_MAP:
+            info = CONGRESSOS_MAP[ultimo]
+            return f"""{info['url']}
+
+Se precisar de mais informações, estou à disposição!"""
+        else:
+            return """Qual congresso?
+
+- Maceió/AL
+- Belém/PA
+- Florianópolis/SC
+- Vitória/ES
+- Ouvidores de Vozes"""
+
+    # 6. Certificados
+    if intencao == "certificados":
+        msg_lower = user_message.lower()
+        if any(p in msg_lower for p in ["congresso", "evento", "seminário"]):
+            return RESPOSTAS_PADRAO["certificados_congressos"]
+        elif any(p in msg_lower for p in ["curso", "comunidade"]):
+            return RESPOSTAS_PADRAO["certificados_cursos"]
+        else:
+            return """Certificado de congresso ou curso?
+
+- Congresso/Evento: https://doity.com.br/area-do-participante/certificado
+- Curso/Comunidade: WhatsApp +55 47 99242-8886"""
+
+    # 7. Respostas diretas
+    if intencao in RESPOSTAS_PADRAO:
+        return RESPOSTAS_PADRAO[intencao]
+
+    # 8. IA (só casos não mapeados)
     if not OPENAI_API_KEY or OpenAI is None:
-        return f"#HUMANO\n\nVou te transferir para nosso atendimento humano.\n\nWhatsApp: {WHATSAPP_ATENDIMENTO}\n\nAguarde o contato!"
+        return f"#HUMANO\n\nWhatsApp: {WHATSAPP_ATENDIMENTO}"
 
     try:
         client = OpenAI(api_key=OPENAI_API_KEY, timeout=20)
-
-        # Histórico da conversa (últimas 8 trocas = 16 mensagens)
-        history = CONVERSATION_HISTORY.get(phone, [])[-16:]
         
-        system_prompt = f"""Você é um atendente do CENAT via WhatsApp. Seu nome pode ser Ana ou você pode se apresentar como "equipe CENAT".
+        history = CONVERSATION_HISTORY.get(phone, [])[-8:]
+        
+        congresso_context = ""
+        if phone in LAST_CONGRESS and LAST_CONGRESS[phone] in CONGRESSOS_MAP:
+            info = CONGRESSOS_MAP[LAST_CONGRESS[phone]]
+            congresso_context = f"\n\nÚLTIMO CONGRESSO: {info['nome']}\nLink: {info['url']}"
+        
+        system_prompt = f"""Você é atendente CENAT. Tom profissional, educado.
 
-PERSONALIDADE:
-- Tom NATURAL e CONVERSACIONAL (como um humano real)
-- Amigável mas profissional
-- Empático e atencioso
-- Use expressões naturais: "entendi", "perfeito", "claro", "sem problema"
-- Pode usar "a gente" em vez de "nós" para soar mais próximo
-- NUNCA seja robótico ou engessado
+CRÍTICO:
+- NUNCA invente informações
+- Se não souber: #HUMANO
+- 3-4 linhas máximo
+- Seja cordial mas conciso{congresso_context}
 
-CONTEXTO AGUÇADO - MUITO IMPORTANTE:
-- Você TEM MEMÓRIA da conversa anterior (veja o histórico)
-- Se o cliente mencionou algo antes, LEMBRE e CONECTE
-- Se ele perguntou sobre X e depois Y, você sabe que já falaram de X
-- Se ele voltar em um assunto anterior, retome naturalmente
-- Cliente confuso/mal formulado? Você ENTENDE pela intenção
+CONTEXTO:
+{RAG_CONTEXT[:3000]}
 
-EXEMPLOS DE CONTEXTO:
-Cliente: "Quero saber sobre Maceió"
-Você: [explica Maceió]
-Cliente: "E Floripa?"
-Você: "Opa! Florianópolis também é show. Esse é em outubro, diferente de Maceió que é setembro..."
+CONGRESSOS:
+- Maceió/AL – 05 e 06/09 - https://cenatsaudemental.com/boas-praticas-em-saude-mental-maceio-2025
+- Belém/PA – 09 e 10/09 - https://cenatsaudemental.com/v-congresso-internacional-bpsm-belem-2025
+- Florianópolis/SC – 21 e 22/10 - https://cenatsaudemental.com/boas-praticas-em-saude-mental-floripa-2025
+- Vitória/ES – 24 e 25/10 - https://cenatsaudemental.com/novas-abordagens-sm-vitoria-2025
+- Ouvidores (Online) – 05 e 06/12 - https://cenatsaudemental.com/congresso-online-ouvidores-2025
 
-Cliente: "Quanto custa?"
-Você: [vê no histórico que ele perguntou sobre comunidade] "A comunidade? São R$ 387 por ano..."
-
-REGRAS DE RESPOSTA:
-1. Máximo 6-8 linhas (seja conciso mas completo)
-2. Use o nome: {user_name or 'Cliente'}
-3. Se precisar de dados específicos (nome completo, evento exato, CPF), escreva: #HUMANO
-4. NUNCA invente datas, preços ou eventos que não estão no contexto
-5. Se não souber COM CERTEZA, seja honesto
-
-QUANDO USAR #HUMANO:
-- Solicitar dados pessoais específicos (nome completo para certificado, CPF, etc)
-- Problemas técnicos que você não resolve
-- Verificações internas (status de pagamento, inscrição)
-- Qualquer dúvida que você NÃO tem certeza
-
-CONTEXTO DOS NOSSOS PRODUTOS/SERVIÇOS:
-{RAG_CONTEXT}
-
-CONGRESSOS 2025:
-1. MACEIÓ/AL – 05 e 06/09
-2. BELÉM/PA – 09 e 10/09  
-3. FLORIANÓPOLIS/SC – 21 e 22/10
-4. VITÓRIA/ES – 24 e 25/10
-5. OUVIDORES DE VOZES (Online) – 05 e 06/12
-
-LINKS IMPORTANTES:
-- Site: https://cenatsaudemental.com/
-- Comunidade: https://cenatsaudemental.com/comunidademsaudemental
-- Intercâmbios: https://cenatsaudemental.com/cenat-intercambios
-- Email: atendimento@cenatcursos.com.br
-- Pós: secretaria@cenatcursos.com.br
-- WhatsApp atendimento: {WHATSAPP_ATENDIMENTO}"""
+CONTATOS:
+- WhatsApp: {WHATSAPP_ATENDIMENTO}
+- Email: atendimento@cenatcursos.com.br"""
 
         messages = [{"role": "system", "content": system_prompt}]
-        
-        # Adiciona histórico (contexto aguçado)
-        for item in history:
-            messages.append(item)
-        
-        # Mensagem atual
+        messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages,
-            max_tokens=300,
+            max_tokens=150,
             temperature=0.4,
         )
         
-        resposta = resp.choices[0].message.content or "Desculpe, não consegui processar sua mensagem."
-        resposta = limitar_linhas(resposta, max_linhas=10)
+        resposta = resp.choices[0].message.content or "Não consegui processar."
         
-        # Atualiza histórico (mantém contexto)
         CONVERSATION_HISTORY[phone].append({"role": "user", "content": user_message})
         CONVERSATION_HISTORY[phone].append({"role": "assistant", "content": resposta})
         
-        # Limita histórico a 30 mensagens (15 trocas)
-        if len(CONVERSATION_HISTORY[phone]) > 30:
-            CONVERSATION_HISTORY[phone] = CONVERSATION_HISTORY[phone][-30:]
+        if len(CONVERSATION_HISTORY[phone]) > 16:
+            CONVERSATION_HISTORY[phone] = CONVERSATION_HISTORY[phone][-16:]
         
         return resposta
         
     except Exception as e:
-        logger.error(f"Erro OpenAI: {e}")
-        return f"#HUMANO\n\nEstou com dificuldades técnicas.\n\nPor favor, entre em contato pelo WhatsApp: {WHATSAPP_ATENDIMENTO}"
+        logger.error(f"Erro: {e}")
+        return f"#HUMANO\n\nWhatsApp: {WHATSAPP_ATENDIMENTO}"
 
 # ======================
 # MEGA API
@@ -520,13 +561,13 @@ async def send_whatsapp(phone: str, message: str) -> bool:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code >= 400:
-                logger.error(f"MEGA send failed {resp.status_code}: {resp.text}")
+                logger.error(f"MEGA fail {resp.status_code}: {resp.text}")
                 resp.raise_for_status()
             LAST_SENT[norm_phone] = (message.strip(), monotonic())
-            logger.info(f"Mensagem enviada para {to}: {message[:120]}")
+            logger.info(f"✅ Enviado: {message[:60]}")
             return True
     except Exception as e:
-        logger.error(f"Erro envio WhatsApp: {e}")
+        logger.error(f"Erro envio: {e}")
         return False
 
 # ======================
@@ -536,12 +577,10 @@ async def send_whatsapp(phone: str, message: str) -> bool:
 async def health():
     return {
         "status": "ok",
-        "version": "3.0-CENAT-CONTEXTO",
+        "version": "3.5-RESPEITA-NAO",
+        "temperature": 0.4,
         "ai_mode": "DRY_RUN" if AI_DRY_RUN else "REAL",
-        "context_loaded": len(RAG_CONTEXT) > 10,
-        "mega_configured": bool(MEGA_API_TOKEN and MEGA_INSTANCE_ID),
-        "intencoes_ativas": len(INTENCOES),
-        "whatsapp_atendimento": WHATSAPP_ATENDIMENTO,
+        "model": MODEL_NAME,
     }
 
 @app.post("/webhook")
@@ -549,7 +588,6 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         payload = await request.json()
     except Exception:
-        logger.warning("Webhook: corpo não-JSON; ignorando.")
         return {"status": "ignored", "reason": "invalid_json"}
 
     key = (payload.get("key") or {}) if isinstance(payload, dict) else {}
@@ -563,12 +601,11 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         push_name = first.get("pushName") or push_name
 
     remote_jid = key.get("remoteJid") or ""
-    phone = _digits_only(remote_jid) or _digits_only(payload.get("phone") or "")
+    phone = _digits_only(remote_jid)
     from_me = bool(key.get("fromMe"))
     text = _extract_text(msg)
 
-    caller_ip = request.client.host if request.client else "unknown"
-    logger.info(f"🌐 Webhook de {caller_ip} | fromMe={from_me} | jid={remote_jid} | texto='{text[:80]}'")
+    logger.info(f"📩 {remote_jid} | '{text[:50]}'")
 
     if from_me and IGNORE_FROM_ME:
         return {"status": "ignored", "reason": "own_message"}
@@ -580,14 +617,12 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     if sent:
         last_text, t0 = sent
         if text == last_text and (monotonic() - t0) < DEDUP_TTL:
-            logger.info("🔁 Ignorado: eco do próprio envio recente.")
-            return {"status": "ignored", "reason": "echo_recent_outbound"}
+            return {"status": "ignored", "reason": "echo"}
 
     dedup_key = f"{phone}:{hash(text)}"
     t_last = DEDUP.get(dedup_key)
     now = monotonic()
     if t_last and (now - t_last) < DEDUP_TTL:
-        logger.info("⏱️ Ignorado: duplicata recente.")
         return {"status": "ignored", "reason": "duplicate"}
     DEDUP[dedup_key] = now
 
@@ -598,13 +633,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 async def send_message_manual(request: SendMessageRequest):
     success = await send_whatsapp(request.phone, request.message)
     if success:
-        return {"status": "sent", "phone": request.phone, "message": request.message[:60]}
-    raise HTTPException(status_code=500, detail="Falha ao enviar mensagem")
+        return {"status": "sent"}
+    raise HTTPException(status_code=500, detail="Falha")
 
 @app.get("/mega-status")
 async def mega_status():
     if not MEGA_API_TOKEN or not MEGA_INSTANCE_ID:
-        raise HTTPException(status_code=400, detail="MEGA API não configurada")
+        raise HTTPException(status_code=400, detail="MEGA não configurada")
 
     url = f"{MEGA_API_BASE_URL}/rest/instance/{MEGA_INSTANCE_ID}"
     headers = {"Authorization": f"Bearer {MEGA_API_TOKEN}"}
@@ -615,7 +650,6 @@ async def mega_status():
             resp.raise_for_status()
             return resp.json()
     except Exception as e:
-        logger.error(f"Erro status MEGA: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/reload-context")
@@ -623,22 +657,13 @@ async def reload_context():
     global RAG_CONTEXT, _RAG_SIG
     RAG_CONTEXT = load_context()
     _RAG_SIG = data_signature()
-    logger.info(f"🔄 RAG recarregado: {len(RAG_CONTEXT)} caracteres")
+    logger.info(f"🔄 RAG: {len(RAG_CONTEXT)} chars")
     return {"status": "ok", "context_len": len(RAG_CONTEXT)}
 
 @app.get("/context/preview")
 async def context_preview(n: int = 800):
     n = max(0, min(n, 5000))
     return {"preview": RAG_CONTEXT[:n], "len": len(RAG_CONTEXT)}
-
-@app.get("/stats")
-async def stats():
-    """Estatísticas do sistema."""
-    return {
-        "conversas_ativas": len(CONVERSATION_HISTORY),
-        "intencoes_disponiveis": list(INTENCOES.keys()),
-        "rag_size": len(RAG_CONTEXT),
-    }
 
 # ======================
 # Worker
@@ -647,40 +672,32 @@ async def process_and_reply(phone: str, message: str, user_name: str):
     try:
         async with LOCKS[phone]:
             response = await generate_response(message, user_name, phone)
-            logger.info(f"🤖 IA gerou resposta: {response[:200]}")
             
-            # Verifica se precisa de humano
             if "#HUMANO" in response:
-                logger.warning(f"⚠️ Marcador #HUMANO detectado para {user_name}")
-                # Remove o marcador antes de enviar
                 response = response.replace("#HUMANO", "").strip()
                 if not response:
-                    response = f"Vou te transferir para nosso atendimento humano.\n\nWhatsApp: {WHATSAPP_ATENDIMENTO}\n\nAguarde o contato!"
+                    response = f"Vou te transferir.\n\nWhatsApp: {WHATSAPP_ATENDIMENTO}"
             
-            ok = await send_whatsapp(phone, response)
-            if ok:
-                logger.info(f"✅ Resposta enviada para {user_name}")
-            else:
-                logger.error(f"❌ Falha ao enviar para {user_name}")
+            await send_whatsapp(phone, response)
+            
     except Exception as e:
-        logger.error(f"Erro no processamento: {e}")
+        logger.error(f"Erro: {e}")
 
 # ======================
-# Watcher do RAG
+# Watcher
 # ======================
 async def rag_watcher():
     global _RAG_SIG, RAG_CONTEXT
-    logger.info(f"👀 RAG watcher ativo em '{RAG_DIR}' a cada {RAG_WATCH_INTERVAL}s")
+    logger.info("👀 Watcher ativo")
     while True:
         try:
             sig = data_signature()
             if sig != _RAG_SIG:
-                logger.info("🪄 Mudanças detectadas em data/: recarregando RAG...")
                 RAG_CONTEXT = load_context()
                 _RAG_SIG = sig
-                logger.info(f"🔄 RAG recarregado automaticamente: {len(RAG_CONTEXT)} caracteres")
+                logger.info(f"🔄 RAG reload")
         except Exception as e:
-            logger.warning(f"Watcher RAG: {e}")
+            logger.warning(f"Watcher: {e}")
         await asyncio.sleep(RAG_WATCH_INTERVAL)
 
 # ======================
@@ -688,15 +705,13 @@ async def rag_watcher():
 # ======================
 @app.on_event("startup")
 async def startup():
-    logger.info("🚀 WhatsApp AI Agent v3.0 CENAT CONTEXTO AGUÇADO iniciado")
-    logger.info(f"📄 Contexto RAG: {len(RAG_CONTEXT)} caracteres")
-    logger.info(f"🤖 Modo IA: {'DRY_RUN (teste)' if AI_DRY_RUN else 'REAL (OpenAI)'}")
-    logger.info(f"📱 MEGA API: {'configurada' if (MEGA_API_TOKEN and MEGA_INSTANCE_ID) else 'NÃO CONFIGURADA'}")
-    logger.info(f"🎯 Intenções mapeadas: {len(INTENCOES)}")
-    logger.info(f"📞 WhatsApp atendimento: {WHATSAPP_ATENDIMENTO}")
+    logger.info("🚀 v3.5 RESPEITA NÃO")
+    logger.info(f"📄 RAG: {len(RAG_CONTEXT)} chars")
+    logger.info(f"🤖 {'DRY_RUN' if AI_DRY_RUN else f'REAL ({MODEL_NAME})'}")
     if RAG_AUTO_RELOAD:
         asyncio.create_task(rag_watcher())
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=os.getenv("API_HOST", "0.0.0.0"), port=int(os.getenv("API_PORT", "8000")))
+    
